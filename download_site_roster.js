@@ -12,9 +12,8 @@
 
     var studentArr = [];
     var pending = -1;
-    var fetched = 0;
-    var needsFetched = 0;
     var ajaxPool;
+    var aborted = false;
     addButton();
 
     function addButton() {
@@ -26,6 +25,13 @@
             $('#site_roster').one('click', roster);
         }
         return;
+    }
+
+    function abortAll() {
+        for (var i = 0; i < ajaxPool.length; i++) {
+            ajaxPool[i].abort();
+        }
+        ajaxPool = [];
     }
 
     function setupPool() {
@@ -64,11 +70,12 @@
     }
 
     function roster() {
+        aborted = false;
         setupPool();
         var courseId = getCourseId();
         var url = '/api/v1/courses/' + courseId + '/users?enrollment_type%5b%5d=student&include%5b%5d=email&include%5b%5d=enrollments&per_page=100';
+        progressbar();
         pending = 0;
-        notification();
         getRoster(courseId, url);
     }
 
@@ -89,6 +96,9 @@
 
     function getRoster(courseId, url) {
         try {
+            if (aborted) {
+                throw new Error('Aborted');
+            }
             pending++;
             $.getJSON(url, function(udata, status, jqXHR) {
                 url = nextURL(jqXHR.getResponseHeader('Link'));
@@ -109,10 +119,12 @@
                     getRoster(courseId, url);
                 }
                 pending--;
+                progressbar(0.5, 1);
                 if (pending <= 0 && studentArr.length >= 1) {
                     makeCSV();
                 }
             }).fail(function() {
+                pending--;
                 throw new Error('Failed to load list of students');
             });
         } catch (e) {
@@ -122,6 +134,12 @@
 
     function makeCSV() {
         try {
+            if (aborted) {
+                console.log('Process aborted');
+                aborted = false;
+                return;
+            }
+            progressbar();
             var csv = createCSV();
             if (csv) {
                 var blob = new Blob([ csv ], {
@@ -172,20 +190,44 @@
         return t;
     }
 
-    function notification() {
-        $('body').append('<div id="roster_notification"></div>');
-        $('#roster_notification').html('<p>The site roster export is completed. Please check your download folder.</p>');
-        $('#roster_notification').dialog({
-            'title' : 'Fetching Site Roster',
-            'autoOpen' : true,
-            'buttons' : [ {
-                'text' : 'Close',
-                'click' : function() {
-                    $(this).dialog('close');
-                    $('#notification').one('click', roster);
+    function progressbar(x, n) {
+        try {
+            if (typeof x === 'undefined' || typeof n == 'undefined') {
+                if ($('#jj_progress_dialog').length === 0) {
+                    $('body').append('<div id="jj_progress_dialog"></div>');
+                    $('#jj_progress_dialog').append('<div id="jj_progressbar"></div>');
+                    $('#jj_progress_dialog').dialog({
+                        'title' : 'Fetching Site Roster',
+                        'autoOpen' : false,
+                        'buttons' : [ {
+                            'text' : 'Cancel',
+                            'click' : function() {
+                                $(this).dialog('close');
+                                aborted = true;
+                                abortAll();
+                                pending = -1;
+                                $('#site_roster').one('click', roster);
+                            }
+                        } ]
+                    });
                 }
-            } ]
-        });
+                if ($('#jj_progress_dialog').dialog('isOpen')) {
+                    $('#jj_progress_dialog').dialog('close');
+                } else {
+                    $('#jj_progressbar').progressbar({
+                        'value' : false
+                    });
+                    $('#jj_progress_dialog').dialog('open');
+                }
+            } else {
+                if (!aborted) {
+                    var val = n > 0 ? Math.round(100 * x / n) : false;
+                    $('#jj_progressbar').progressbar('option', 'value', val);
+                }
+            }
+        } catch (e) {
+            errorHandler(e);
+        }
     }
 
     function errorHandler(e) {
